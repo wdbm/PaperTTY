@@ -95,7 +95,7 @@ description = "A module to control Raspberry Pi GPIO channels"
 name = "rpi.gpio"
 optional = false
 python-versions = "*"
-version = "0.7.0"
+version = "0.7.1"
 
 [[package]]
 category = "main"
