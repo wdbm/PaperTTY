@@ -594,3 +594,481 @@ class EPD2in13d(WavesharePartial):
             self.display_partial(self.get_frame_buffer(image), x, y, x + image.width, x + image.height)
         else:
             self.display_full(self.get_frame_buffer(image))
+
+class EPD7in5v2partial(WavesharePartial):
+    """WaveShare 7.5" GDEW075T7 - monochrome
+    https://github.com/joukos/PaperTTY/issues/65#issue-681003449"""
+
+    PANEL_SETTING = 0x00
+    POWER_SETTING = 0x01
+    POWER_OFF = 0x02
+    POWER_OFF_SEQUENCE_SETTING = 0x03
+    POWER_ON = 0x04
+    POWER_ON_MEASURE = 0x05
+    BOOSTER_SOFT_START = 0x06
+    DEEP_SLEEP = 0x07
+    DATA_START_TRANSMISSION_1 = 0x10
+    DATA_STOP = 0x11
+    DISPLAY_REFRESH = 0x12
+    DATA_START_TRANSMISSION_2 = 0x13
+    LUT_FOR_VCOM = 0x20
+    LUT_WHITE_TO_WHITE = 0x21
+    LUT_BLACK_TO_WHITE = 0x22
+    LUT_WHITE_TO_BLACK = 0x23
+    LUT_BLACK_TO_BLACK = 0x24
+    PLL_CONTROL = 0x30
+    TEMPERATURE_SENSOR_COMMAND = 0x40
+    TEMPERATURE_SENSOR_SELECTION = 0x41
+    TEMPERATURE_SENSOR_WRITE = 0x42
+    TEMPERATURE_SENSOR_READ = 0x43
+    VCOM_AND_DATA_INTERVAL_SETTING = 0x50
+    LOW_POWER_DETECTION = 0x51
+    TCON_SETTING = 0x60
+    RESOLUTION_SETTING = 0x61
+    GSST_SETTING = 0x65
+    GET_STATUS = 0x71
+    AUTO_MEASUREMENT_VCOM = 0x80
+    READ_VCOM_VALUE = 0x81
+    VCM_DC_SETTING = 0x82
+    PARTIAL_WINDOW = 0x90
+    PARTIAL_IN = 0x91
+    PARTIAL_OUT = 0x92
+    PROGRAM_MODE = 0xA0
+    ACTIVE_PROGRAMMING = 0xA1
+    READ_OTP = 0xA2
+    POWER_SAVING = 0xE3
+
+    # LUTs
+
+    T1 = 0x1e # 30, charge balance pre-phase
+    T2 = 0x05 # 5, optional extension
+    T3 = 0x1e # 30, colour change phase (b/w)
+    T4 = 0x05 # optional extension for one colour
+
+    lut_vcom1 = [
+        0x00, T1, T2, T3, T4, 0x01,
+    ] + ([0x00] * 36) # total size: 42
+
+    lut_ww1 = [
+        0x00, T1, T2, T3, T4, 0x01,
+    ] + ([0x00] * 36)
+
+    lut_bw1 = [
+        0x5A, T1, T2, T3, T4, 0x01, # 0x5A: more white
+    ] + ([0x00] * 36)
+
+
+    lut_wb1 = [
+        0x84, T1, T2, T3, T4, 0x01,
+    ] + ([0x00] * 36)
+
+    lut_bb1 = [
+        0x00, T1, T2, T3, T4, 0x01,
+    ] + ([0x00] * 36)
+
+    lut_bd1 = [
+        0x00, T1, T2, T3, T4, 0x01
+    ] + ([0x00] * 36)
+
+    def __init__(self):
+        super().__init__(name='7.5" new version (with partial)', width=800, height=480)
+
+    def init(self, partial=False):
+        '''
+        Initialise the ePaper screen
+
+        - partial: whether to support partial refresh or not
+        '''
+
+        self.partial_refresh = partial
+        self.in_partial = False
+        print('Partial support: {}'.format(partial))
+
+        # EPD hardware init start
+        # self.lut = self.lut_partial_update if partial else self.lut_full_update
+        if self.epd_init() != 0:
+            return -1
+
+        # if self.is_hibernating: self.reset()
+        self.reset()
+
+        self.send_command(self.BOOSTER_SOFT_START)  # boost soft start
+        self.send_data(0x17)  # A
+        self.send_data(0x17)  # B
+        self.send_data(0x27)
+        self.send_data(0x17)  # C
+
+        self.send_command(self.POWER_SETTING)
+        self.send_data(0x07) # VDS_EN, VDG_EN
+        self.send_data(0x17) # VCOM_HV, VGHL_LV[1], VGHL_LV[0]
+        self.send_data(0x3f) # VDH
+        self.send_data(0x3f) # VDL
+
+        self.send_command(self.RESOLUTION_SETTING)
+        self.send_data(0x03)
+        self.send_data(0x20)
+        self.send_data(0x01)
+        self.send_data(0xe0)
+
+        self.send_command(0x15) # Dual SPI mode
+        self.send_data(0x00)
+
+        self.send_command(self.TCON_SETTING)
+        self.send_data(0x22)
+
+        # self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
+        # self.send_data(0x10)
+        # self.send_data(0x07)
+
+        # from GxEPD2
+        self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
+        self.send_data(0x29) # LUTKW, N2OCP: copy new to old
+        self.send_data(0x07)
+
+        print('Main init finished.')
+
+        if partial:
+            self.send_command(self.PANEL_SETTING)
+            self.send_data(0x1f) # KW-3f  KWR-2F  BWROTP 0f  BWOTP 1f
+
+            self.send_command(self.PLL_CONTROL)
+            self.send_data(0x06) # 3C 50Hz
+        else:
+            self.send_command(self.PANEL_SETTING)
+            self.send_data(0x1f) # full update LUT from OTP
+
+        # All done, let's power on!
+        print('Power on.')
+        self.send_command(self.POWER_ON)
+        self.wait_until_idle()
+        print('Init complete.')
+        # EPD hardware init end
+        return 0
+
+    def set_lut(self):
+        raise NotImplementedError
+
+    def set_frame_memory(self, image, x, y):
+        raise NotImplementedError
+
+    def clear_frame_memory(self, color):
+        raise NotImplementedError
+
+    def set_part_reg(self):
+        '''
+        Set ¿registers? for partial refresh
+        '''
+
+        print('Panel setting.')
+
+        self.send_command(self.PANEL_SETTING)
+        self.send_data(0x3f) # partial update LUT from registers
+
+        print('Setting VCM_DC')
+
+        self.send_command(self.VCM_DC_SETTING)
+        # self.send_data(0x2C) # -2.3V same value as in OTP
+        self.send_data(0x26) # -2.0V
+        # self.send_data(0x1C) # -1.5V
+
+        self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
+        # self.send_data(0x39) # LUTBD, N2OCP: copy new to old
+        # self.send_data(0x47)
+        self.send_data(0x21) # 0x11: white border, 0x21: black border
+        self.send_data(0x07)
+
+        # Update LUTs
+
+        print('LUT upload...', end='')
+
+        self.send_command(0x20)  # vcom
+        for count in range(0, 42):
+            self.send_data(self.lut_vcom1[count])
+        self.send_command(0x21)  # ww --
+        for count in range(0, 42):
+            self.send_data(self.lut_ww1[count])
+        self.send_command(0x22)  # bw r
+        for count in range(0, 42):
+            self.send_data(self.lut_bw1[count])
+        self.send_command(0x23)  # wb w
+        for count in range(0, 42):
+            self.send_data(self.lut_wb1[count])
+        self.send_command(0x24)  # bb b
+        for count in range(0, 42):
+            self.send_data(self.lut_bb1[count])
+        self.send_command(0x25) # bd, apparently
+        for count in range(0, 42):
+            self.send_data(self.lut_bd1[count])
+
+        print('done')
+
+    def display_full(self, frame_buffer):
+        '''
+        Displays the given frame buffer onto the e-paper screen
+        '''
+
+        if not frame_buffer:
+            return
+
+        if self.in_partial:
+            print('Partial out.')
+            self.send_command(self.PARTIAL_OUT)
+            self.in_partial = False
+
+        self.send_command(self.DATA_START_TRANSMISSION_1)
+        for i in range(0, int(self.width * self.height / 8)):
+            self.send_data(0x00)
+        self.delay_ms(10)
+
+        self.send_command(self.DATA_START_TRANSMISSION_2)
+        for i in range(0, int(self.width * self.height / 8)):
+            self.send_data(frame_buffer[i])
+        self.delay_ms(10)
+
+        self.send_command(self.DISPLAY_REFRESH)
+        self.delay_ms(100)
+        self.wait_until_idle()
+
+    def set_memory_area(self, x_start, y_start, x_end, y_end):
+        if not self.in_partial:
+
+            print('Partial in.')
+            self.set_part_reg()
+            self.send_command(self.PARTIAL_IN)
+            self.in_partial = True
+
+        print('Partial Window: ({0}, {2}) to ({1}, {3})'
+            .format(x_start, x_end, y_start, y_end))
+        self.send_command(self.PARTIAL_WINDOW)
+
+        print(x_start / 256)
+        print(x_start % 256)
+        print(x_end / 256)
+        print(x_end % 256)
+
+        print(y_start / 256)
+        print(y_start % 256)
+        print(y_end / 256)
+        print(y_end % 256)
+
+        self.send_data(int(x_start / 256))
+        self.send_data(int(x_start % 256))
+        self.send_data(int(x_end / 256))
+        self.send_data(int(x_end % 256))
+
+        self.send_data(int(y_start / 256))
+        self.send_data(int(y_start % 256))
+        self.send_data(int(y_end / 256))
+        self.send_data(int(y_end % 256))
+
+        # 01 - gates scan both inside and outside of partial window (default)
+        self.send_data(0x01)
+
+        self.delay_ms(10)
+        print('Partial window set.')
+
+    def set_frame_memory(self, image, x, y):
+        print('Setting Frame Memory')
+        if image is None or x < 0 or y < 0:
+            return
+        image_monocolor = image.convert('1')
+        image_width, image_height = image_monocolor.size
+        # x point must be the multiple of 8 or the last 3 bits will be ignored
+        # x = x & 0xF8
+        # image_width = image_width & 0xF8
+        if x + image_width >= self.width:
+            x_end = self.width - 1
+        else:
+            x_end = x + image_width - 1
+        if y + image_height >= self.height:
+            y_end = self.height - 1
+        else:
+            y_end = y + image_height - 1
+
+        self.set_memory_area(x, y, x_end, y_end)
+
+        print('Generating data...', end='')
+
+        bytes_to_send = []
+
+        # send the image data
+        pixels = image_monocolor.load()
+        byte_to_send = 0x00
+        for j in range(0, y_end - y + 1):
+            # 1 byte = 8 pixels, steps of i = 8
+            for i in range(0, x_end - x + 1):
+                # Set the bits for the column of pixels at the current position.
+                if pixels[i, j] != 0:
+                    byte_to_send |= 0x80 >> (i % 8)
+                if i % 8 == 7:
+                    # print('Send data: {}'.format(byte_to_send))
+                    bytes_to_send.append(byte_to_send)
+                    byte_to_send = 0x00
+        print('done.')
+
+        print('Sending data...', end='')
+        self.send_command(self.DATA_START_TRANSMISSION_1)
+        for b in bytes_to_send:
+            self.send_data(~b)
+        self.delay_ms(10)
+
+        self.send_command(self.DATA_START_TRANSMISSION_2)
+        for b in bytes_to_send:
+            self.send_data(b)
+        self.delay_ms(10)
+
+        print('done.')
+
+        print('Frame memory set')
+
+    def display_frame(self):
+
+        print('Refreshing screen.')
+
+        # self.set_full_reg()
+        self.send_command(self.DISPLAY_REFRESH)
+        self.delay_ms(300)
+        print('Waiting till idle.')
+        self.wait_until_idle()
+
+        print('Screen refreshed.')
+
+    def display_partial(self, frame_buffer, x_start, y_start, x_end, y_end):
+        '''
+        Refresh a particular area on the screen
+        '''
+
+        if not frame_buffer:
+            return
+
+        if not self.in_partial:
+
+            print('Partial in.')
+            self.set_part_reg()
+            self.send_command(self.PARTIAL_IN)
+            self.in_partial = True
+
+        print('Partial Window: ({0}, {2}) to ({1}, {3})'
+            .format(x_start, x_end, y_start, y_end))
+        self.send_command(self.PARTIAL_WINDOW)
+
+        print(x_start / 256)
+        print(x_start % 256)
+        print(x_end / 256)
+        print(x_end % 256 - 1)
+
+        print(y_start / 256)
+        print(y_start % 256)
+        print(y_end / 256)
+        print(y_end % 256 - 1)
+
+        self.send_data(int(x_start / 256))
+        self.send_data(int(x_start % 256))
+        self.send_data(int(x_end / 256))
+        self.send_data(int(x_end % 256 - 1))
+
+        self.send_data(int(y_start / 256))
+        self.send_data(int(y_start % 256))
+        self.send_data(int(y_end / 256))
+        self.send_data(int(y_end % 256 - 1))
+
+        # 01 - gates scan both inside and outside of partial window (default)
+        self.send_data(0x01)
+
+        self.delay_ms(10)
+
+        print('Sending data...', end='')
+
+        self.send_command(self.DATA_START_TRANSMISSION_1)
+        # for i in range(0, int(self.width * self.height / 8)):
+            # # print(frame_buffer[i],'%d','0x10')
+            # self.send_data(~frame_buffer[i])
+        for i in frame_buffer:
+            self.send_data(~i)
+        self.delay_ms(10)
+
+        self.send_command(self.DATA_START_TRANSMISSION_2)
+        # for i in range(0, int(self.width * self.height / 8)):
+            # # print(~frame_buffer[i],'%d','0x13')
+            # self.send_data(frame_buffer[i])
+        for i in frame_buffer:
+            self.send_data(i)
+        self.delay_ms(10)
+
+        print('done.')
+
+        # print('Exit partial mode')
+        # self.send_command(self.PARTIAL_OUT)
+        # self.in_partial = False
+
+        print('Refresh screen.')
+
+        # self.set_full_reg()
+        self.send_command(self.DISPLAY_REFRESH)
+        self.delay_ms(300)
+        self.wait_until_idle()
+
+        print('All done.')
+
+    def draw(self, x, y, image):
+        """Replace a particular area on the display with an image"""
+        if self.partial_refresh:
+            print('Drawing partial: ({}, {}).'.format(x, y))
+            # self.display_partial(self.get_frame_buffer(image, allow_partial=True), x, y, x + image.width, x + image.height)
+            self.set_frame_memory(image, x, y)
+            self.display_frame()
+        else:
+            print('Drawing full via partial')
+            self.set_frame_memory(image, x, y)
+            #self.display_full(self.get_frame_buffer(image))
+            self.display_frame()
+        print('Drawing finished.')
+
+    def sleep(self):
+        '''
+        Puts the panel into deep sleep mode
+        '''
+
+        print('Going to sleep.')
+
+        self.send_command(self.POWER_OFF)
+        self.wait_until_idle()
+
+        self.send_command(self.DEEP_SLEEP)
+        self.send_data(0xa5)
+
+        print('Good night!')
+
+    def reset(self):
+        """
+        Mirroring behaviour in reference implementation:
+        https://github.com/waveshare/e-Paper/blob/702def06bcb75983c98b0f9d25d43c552c248eb0/RaspberryPi%26JetsonNano/python/lib/waveshare_epd/epd7in5_V2.py#L48-L54
+
+        The earlier implementation of `reset` inherited from `WaveshareFull` did not work with some units
+        (`init` hanged at `wait_until_idle` after the `POWER_ON` command was sent).
+
+        A quick scan of the other implementations indicates that the reset varies across devices (it's unclear
+        whether there is good reason for device specific differences or if the developer was just being inconsistent...)
+        e.g. significantly different delay times:
+        https://github.com/waveshare/e-Paper/blob/702def06bcb75983c98b0f9d25d43c552c248eb0/RaspberryPi%26JetsonNano/python/lib/waveshare_epd/epd1in54c.py#L46-L52
+        """
+        # Deliberately importing here to achieve same fail-on-use import behaviour as in `drivers_base.py`
+        import RPi.GPIO as GPIO
+
+        self.digital_write(self.RST_PIN, GPIO.HIGH)
+        self.delay_ms(200)
+        self.digital_write(self.RST_PIN, GPIO.LOW)
+        self.delay_ms(2)
+        self.digital_write(self.RST_PIN, GPIO.HIGH)
+        self.delay_ms(200)
+
+    def wait_until_idle(self):
+        """
+        Mirroring behaviour in reference implementation (i.e. differently to other implementations, we send command 0x71
+        and poll without sleep):
+        https://github.com/waveshare/e-Paper/blob/702def06bcb75983c98b0f9d25d43c552c248eb0/RaspberryPi%26JetsonNano/python/lib/waveshare_epd/epd7in5_V2.py#L68-L75
+        """
+        self.send_command(0x71)
+        while self.digital_read(self.BUSY_PIN) == 0:  # 0: busy, 1: idle
+            self.delay_ms(20)
+            self.send_command(0x71)
